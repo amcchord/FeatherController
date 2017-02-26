@@ -30,8 +30,8 @@ All text above, and the splash screen must be included in any redistribution
 Adafruit_SSD1306 display(OLED_RESET);
 
 Adafruit_MotorShield AFMS = Adafruit_MotorShield();
-Adafruit_DCMotor *myMotor = AFMS.getMotor(1);
-
+Adafruit_DCMotor *leftMotor = AFMS.getMotor(1);
+Adafruit_DCMotor *rightMotor = AFMS.getMotor(3);
 
 //Trim for RC Inputs
 const int rcMin = 1099;
@@ -45,6 +45,10 @@ int rcScale = rcMax - rcMin;
 //Define the PPM decoder object
 PulsePositionInput myIn;
 
+//Weapon
+Servo weapon;
+#define WEAPONPIN 5
+
 //Create some global variables to store the state of RC Reciver Channels
 double rc1 = 0; // Turn
 double rc2 = 0; // Thrust
@@ -55,15 +59,13 @@ double rc6 = 0; // Failsafe (Not used yet)
 int left = 0;
 int right = 0;
 
-#if (SSD1306_LCDHEIGHT != 32)
-#error("Height incorrect, please fix Adafruit_SSD1306.h!");
-#endif
+
 
 void setup()   {
 
   pinMode(RCVR_PPM, INPUT_PULLDOWN);
-//  digitalWrite(RCVR_PPM, 1);
-
+  weapon.attach(WEAPONPIN);
+  weapon.write(0);
   AFMS.begin();  // create with the default frequency 1.6KHz
   // by default, we'll generate the high voltage from the 3.3v line internally! (neat!)
   display.begin(SSD1306_SWITCHCAPVCC, 0x3C);  // initialize with the I2C addr 0x3C (for the 128x32)
@@ -78,29 +80,24 @@ void setup()   {
 
 
 
-//   myMotor->setSpeed(150);
-//   myMotor->run(FORWARD);
+
 // //  delay(5000);
 //   myMotor->run(RELEASE);
 
-
-
-
 }
 
-
-void loop() {
+ void loop() {
   updateChannels();
 
   //Scale the raw RC input
   int thrust = round(((rc2 - rcMin)/rcScale) * 500) - 250; //Cast to -250-0-250
   int turn = round(((rc1 - rcMin)/rcScale) * 500) - 250; //Cast to -250-0-250
-  int weapon = round(((rc3 - rcMin)/rcScale) * 180); //Cast to 0-250
+  int weaponPWM = round(((rc3 - rcMin)/rcScale) * 180); //Cast to 0-250
   int direction = round(((rc4 - rcMin)/rcScale) * 10) - 5; //Cast to -5-0-5;
   int ledMode = round(((rc5 - rcMin)/rcScale) * 6);
 
 
-
+  display.clearDisplay();
   //Apply Deadband Correction
   if (thrust < DEADBAND && thrust > (DEADBAND * -1)){
   thrust = 0;
@@ -108,39 +105,58 @@ void loop() {
   if (turn < DEADBAND && turn > (DEADBAND * -1)){
   turn = 0;
   }
-  if (weapon < DEADBAND){
-  weapon = 0;
+  if (weaponPWM < DEADBAND){
+  weaponPWM = 0;
+  }
+
+  weaponPWM = weaponPWM + 30;
+  if (weaponPWM > 179){
+    weaponPWM = 179;
+  }
+  if (ledMode == 6){ //Upside Down Mode
+    thrust = thrust * -1;
+    turn = turn * -1;
   }
 
 
+  if (direction == 5){
+    simpleDrive(thrust, turn);
+    weapon.write(weaponPWM);
+    display.setCursor(0,16);
+    display.setTextSize(2);
+    display.print("   ARMED");
+  }
+  else {
+    simpleDrive(0, 0);
+    weapon.write(30);
+    display.setCursor(0,16);
+    display.setTextSize(2);
+    display.print(" Safe Mode");
+  }
 
   //If we have a serial port attached we can debug our inputs.
-  Serial.print("Thrust: ");
-  Serial.print(thrust);
-  Serial.print(" Turn: ");
-  Serial.print(turn);
-  Serial.print(" Weapon: ");
-  Serial.print(weapon);
-  Serial.print(" Direction: ");
-  Serial.print(direction);
-  Serial.print(" LedMode: ");
-  Serial.println(ledMode);
+  // Serial.print("Thrust: ");
+  // Serial.print(thrust);
+  // Serial.print(" Turn: ");
+  // Serial.print(turn);
+  // Serial.print(" Weapon: ");
+  // Serial.print(weaponPWM);
+  // Serial.print(" Direction: ");
+  // Serial.print(direction);
+  // Serial.print(" LedMode: ");
+  // Serial.println(ledMode);
 
   // text display tests
-  display.clearDisplay();
+
   display.setCursor(0,0);
   display.setTextSize(1);
   display.print("Thrust: ");
   display.println(thrust);
   display.print("Turn:   ");
   display.println(turn);
-  display.print("Left:  ");
-  display.println(left);
-  display.print("Right: ");
-  display.println(right);
-  display.setCursor(96,0);
+  display.setCursor(95,0);
   display.print("W: ");
-  display.println(weapon);
+  display.println(weaponPWM);
   display.display();
 
   delay(10);
@@ -187,6 +203,54 @@ void updateChannels(){
       rc5 = 0;
       rc6 = 0;
     }
+  }
+}
+
+//This function does the steering interpretation from 2 channels.
+//Thrust is how fast you want to go. +255 max forward -255 is max reverse
+//Turn is how hard do you want to turn.
+void simpleDrive(double thrust, double turn){
+  int left = 0;
+  int right = 0;
+
+  //This is where the turning logic is.. That's it.
+  left = thrust + turn;
+  right = thrust - turn;
+
+  //Safety checks!
+  if (left > 255){
+    left = 255;
+  }
+  else if (left < -255){
+    left = -255;
+  }
+
+  //If the left motor needs to go forward.
+  if (left > 0){
+    leftMotor->setSpeed(left);
+    leftMotor->run(FORWARD);
+
+  } else { //Left motor needs to spin backward
+    leftMotor->setSpeed(left * -1);
+    leftMotor->run(BACKWARD);
+  }
+
+
+  //Same thing for the right side
+  if (right > 255){
+    right = 255;
+  }
+  else if (right < -255){
+    right = -255;
+  }
+
+  if (right > 0){
+    rightMotor->setSpeed(right);
+    rightMotor->run(FORWARD);
+
+  } else {
+    rightMotor->setSpeed(right * -1);
+    rightMotor->run(BACKWARD);
   }
 }
 
